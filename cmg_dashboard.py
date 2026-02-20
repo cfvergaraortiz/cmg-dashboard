@@ -9,8 +9,8 @@ Para correr:
 """
 
 import streamlit as st
-import requests
 import pandas as pd
+import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
@@ -25,12 +25,7 @@ st.set_page_config(
     layout="wide",
 )
 
-BASE_URL = "https://sipub.api.coordinador.cl:443"
 
-# El token se lee desde Streamlit Cloud Secrets (o desde .streamlit/secrets.toml localmente)
-# En Streamlit Cloud ve a Settings → Secrets y agrega:
-#   CEN_TOKEN = "tu_token_aqui"
-DEFAULT_TOKEN = st.secrets.get("CEN_TOKEN", "")
 
 # Diccionario de homologación de barras
 # Clave: nombre de barra Online (barra_transf)
@@ -57,148 +52,40 @@ BARRAS_DISPLAY = {nombre_display(k): k for k in BARRAS}
 
 
 # =============================================================================
-# 2. FUNCIONES API
+# 2. CARGA DE DATOS DESDE CSV
 # =============================================================================
 
-def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 500) -> list:
-    """
-    Paginación automática con rate limiting.
-    - page_size=500: menos páginas → menos llamadas → menos riesgo de 429
-    - Pausa de 1s entre páginas para respetar el rate limit del CEN
-    - Reintento con backoff ante 429 o 500
-    """
-    import time
+DATA_DIR = "data"
 
-    all_records = []
-    page = 1
-    MAX_RETRIES = 4
-    DELAY_ENTRE_PAGINAS = 1.0   # segundos entre páginas
-    BACKOFF = [5, 15, 30]       # segundos de espera ante 429/500 (por intento)
-
-    while True:
-        params_page = {**params, "user_key": user_key, "page": page, "limit": page_size}
-
-        for intento in range(MAX_RETRIES):
-            try:
-                response = requests.get(
-                    url,
-                    params=params_page,
-                    headers={"accept": "application/json"},
-                    timeout=30,
-                )
-                response.raise_for_status()
-                break  # éxito
-            except requests.exceptions.HTTPError as e:
-                status = e.response.status_code if e.response is not None else 0
-                if status in (429, 500) and intento < MAX_RETRIES - 1:
-                    espera = BACKOFF[intento]
-                    st.toast(f"API ocupada (error {status}), reintentando en {espera}s...", icon="⏳")
-                    time.sleep(espera)
-                    continue
-                st.error(f"Error {status} en la API del CEN (página {page}): {e}")
-                return all_records
-            except requests.exceptions.RequestException as e:
-                st.error(f"Error de conexión: {e}")
-                return all_records
-
-        try:
-            data = response.json()
-        except Exception:
-            st.error("La API devolvió una respuesta que no es JSON válido.")
-            return all_records
-
-        records = data.get("data", [])
-        if not records:
-            break
-
-        all_records.extend(records)
-
-        if len(records) < page_size:
-            break
-
-        page += 1
-        time.sleep(DELAY_ENTRE_PAGINAS)  # pausa entre páginas para no gatillar el rate limit
-
-    return all_records
+@st.cache_data(ttl=3600)  # refresca cada hora
+def cargar_cmg_online(start_date: str, end_date: str) -> pd.DataFrame:
+    """Lee cmg_online.csv y filtra por rango de fechas."""
+    ruta = os.path.join(DATA_DIR, "cmg_online.csv")
+    if not os.path.exists(ruta):
+        return pd.DataFrame()
+    df = pd.read_csv(ruta, parse_dates=["datetime"])
+    mask = (df["datetime"].dt.date >= pd.to_datetime(start_date).date()) &            (df["datetime"].dt.date <= pd.to_datetime(end_date).date())
+    return df[mask].reset_index(drop=True)
 
 
 @st.cache_data(ttl=3600)
-def fetch_cmg_online(user_key: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    CMg Online — resolución 15 minutos.
-    Hace una solicitud individual por cada barra del diccionario usando el
-    parámetro bar_transf. Así cada llamada trae pocos datos y evitamos el
-    rate limit de la API (error 429).
-    """
-    import time
-
-    url = f"{BASE_URL}/costo-marginal-online/v4/findByDate"
-    dfs = []
-
-    for barra_transf in BARRAS.keys():
-        params = {
-            "startDate": start_date,
-            "endDate":   end_date,
-            "bar_transf": barra_transf,
-        }
-        records = fetch_all_pages(url, user_key, params)
-        if records:
-            dfs.append(pd.DataFrame(records))
-        time.sleep(0.5)  # pausa corta entre barras para no saturar la API
-
-    if not dfs:
+def cargar_cmg_programado(start_date: str, end_date: str) -> pd.DataFrame:
+    """Lee cmg_programado.csv y filtra por rango de fechas."""
+    ruta = os.path.join(DATA_DIR, "cmg_programado.csv")
+    if not os.path.exists(ruta):
         return pd.DataFrame()
-
-    df = pd.concat(dfs, ignore_index=True)
-
-    # Construir datetime desde fecha + hra + min
-    df["datetime"] = (
-        pd.to_datetime(df["fecha"])
-        + pd.to_timedelta(df["hra"].astype(int), unit="h")
-        + pd.to_timedelta(df["min"].astype(int), unit="m")
-    )
-
-    df = df.rename(columns={
-        "barra_info":   "nombre_barra",
-        "barra_transf": "barra_online",
-        "cmg_usd_mwh_": "cmg_real",
-        "cmg_clp_kwh_": "cmg_real_clp",
-    })
-
-    cols = ["datetime", "barra_online", "nombre_barra", "cmg_real", "cmg_real_clp", "version"]
-    df = df[[c for c in cols if c in df.columns]]
-    return df.sort_values(["barra_online", "datetime"]).reset_index(drop=True)
+    df = pd.read_csv(ruta, parse_dates=["datetime"])
+    mask = (df["datetime"].dt.date >= pd.to_datetime(start_date).date()) &            (df["datetime"].dt.date <= pd.to_datetime(end_date).date())
+    return df[mask].reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600)
-def fetch_cmg_programado(user_key: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    CMg Programado PID — resolución horaria.
-    """
-    url = f"{BASE_URL}/cmg-programado-pid/v4/findByDate"
-    params = {"startDate": start_date, "endDate": end_date}
-
-    records = fetch_all_pages(url, user_key, params)
-    if not records:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(records)
-    df["datetime"] = pd.to_datetime(df["fecha_hora"])
-
-    df = df.rename(columns={
-        "nmb_barra_info": "nombre_barra",
-        "llave_cmg":      "barra_prog",
-        "cmg_usd_mwh":    "cmg_programado",
-    })
-
-    # Quedarse solo con barras del diccionario
-    barras_prog = set(BARRAS.values())
-    df = df[df["barra_prog"].isin(barras_prog)].copy()
-
-    cols = ["datetime", "barra_prog", "nombre_barra", "cmg_programado",
-            "zona", "region", "fecha_programa", "hora_programa"]
-    df = df[[c for c in cols if c in df.columns]]
-    return df.sort_values(["barra_prog", "datetime"]).reset_index(drop=True)
+def ultima_actualizacion() -> str:
+    """Lee el timestamp de la última actualización de datos."""
+    ruta = os.path.join(DATA_DIR, "ultima_actualizacion.txt")
+    if os.path.exists(ruta):
+        with open(ruta) as f:
+            return f.read().strip()
+    return "desconocida"
 
 
 # =============================================================================
@@ -258,26 +145,20 @@ with st.sidebar:
     st.title("⚡ CMg Dashboard")
     st.markdown("---")
 
-    user_key = st.text_input(
-        "🔑 User Key (API CEN)",
-        value=DEFAULT_TOKEN,
-        type="password",
-        help="Tu user_key de SIPUB",
-    )
-
     st.markdown("### 📅 Rango de fechas")
     hoy  = datetime.today().date()
     ayer = hoy - timedelta(days=1)
     fecha_inicio = st.date_input("Desde", value=ayer, max_value=hoy)
     fecha_fin    = st.date_input("Hasta", value=hoy,  max_value=hoy)
 
-    if st.button("🔄 Forzar actualización", use_container_width=True):
+    if st.button("🔄 Refrescar vista", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
     st.markdown("---")
-    st.caption(f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    st.caption("Cache 1h | auto-refresh con streamlit-autorefresh")
+    st.caption(f"🕐 Sesión: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"📦 Datos al: {ultima_actualizacion()}")
+    st.caption("Datos actualizados automáticamente cada hora via GitHub Actions.")
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 st.title("⚡ CMg Real vs Programado — SEN Chile")
@@ -285,10 +166,6 @@ st.caption(
     "CMg Online (15 min → promedio horario) vs CMg Programado PID  |  "
     "Fuente: Coordinador Eléctrico Nacional"
 )
-
-if not user_key:
-    st.warning("👈 Ingresa tu user_key en el panel izquierdo para comenzar.")
-    st.stop()
 
 if fecha_inicio > fecha_fin:
     st.error("La fecha de inicio debe ser anterior o igual a la fecha fin.")
@@ -298,12 +175,12 @@ start_str = fecha_inicio.strftime("%Y-%m-%d")
 end_str   = fecha_fin.strftime("%Y-%m-%d")
 
 # ── Carga de datos ────────────────────────────────────────────────────────────
-with st.spinner("Consultando API del CEN..."):
-    df_real = fetch_cmg_online(user_key, start_str, end_str)
-    df_prog = fetch_cmg_programado(user_key, start_str, end_str)
+with st.spinner("Cargando datos..."):
+    df_real = cargar_cmg_online(start_str, end_str)
+    df_prog = cargar_cmg_programado(start_str, end_str)
 
 if df_real.empty and df_prog.empty:
-    st.error("Sin datos. Verifica el user_key o las fechas.")
+    st.error("Sin datos. Verifica el rango de fechas seleccionado.")
     st.stop()
 
 # ── Sección 1: Selector de barra ──────────────────────────────────────────────
