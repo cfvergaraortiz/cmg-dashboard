@@ -60,19 +60,24 @@ BARRAS_DISPLAY = {nombre_display(k): k for k in BARRAS}
 # 2. FUNCIONES API
 # =============================================================================
 
-def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 100) -> list:
+def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 500) -> list:
     """
-    Paginación automática. Auth via user_key como query param.
-    Usamos page_size=100 para no sobrecargar la API del CEN.
+    Paginación automática con rate limiting.
+    - page_size=500: menos páginas → menos llamadas → menos riesgo de 429
+    - Pausa de 1s entre páginas para respetar el rate limit del CEN
+    - Reintento con backoff ante 429 o 500
     """
+    import time
+
     all_records = []
     page = 1
-    MAX_RETRIES = 3
+    MAX_RETRIES = 4
+    DELAY_ENTRE_PAGINAS = 1.0   # segundos entre páginas
+    BACKOFF = [5, 15, 30]       # segundos de espera ante 429/500 (por intento)
 
     while True:
         params_page = {**params, "user_key": user_key, "page": page, "limit": page_size}
 
-        # Reintentos ante errores transitorios del servidor
         for intento in range(MAX_RETRIES):
             try:
                 response = requests.get(
@@ -82,11 +87,13 @@ def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 100)
                     timeout=30,
                 )
                 response.raise_for_status()
-                break  # éxito → salir del loop de reintentos
+                break  # éxito
             except requests.exceptions.HTTPError as e:
-                status = e.response.status_code if e.response is not None else "?"
-                if status == 500 and intento < MAX_RETRIES - 1:
-                    import time; time.sleep(2)   # esperar antes de reintentar
+                status = e.response.status_code if e.response is not None else 0
+                if status in (429, 500) and intento < MAX_RETRIES - 1:
+                    espera = BACKOFF[intento]
+                    st.toast(f"API ocupada (error {status}), reintentando en {espera}s...", icon="⏳")
+                    time.sleep(espera)
                     continue
                 st.error(f"Error {status} en la API del CEN (página {page}): {e}")
                 return all_records
@@ -110,6 +117,7 @@ def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 100)
             break
 
         page += 1
+        time.sleep(DELAY_ENTRE_PAGINAS)  # pausa entre páginas para no gatillar el rate limit
 
     return all_records
 
@@ -118,17 +126,30 @@ def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 100)
 def fetch_cmg_online(user_key: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
     CMg Online — resolución 15 minutos.
-    Trae todas las barras del diccionario BARRAS en una sola llamada (sin filtro
-    de barra) y luego filtra localmente. Así minimizamos llamadas a la API.
+    Hace una solicitud individual por cada barra del diccionario usando el
+    parámetro bar_transf. Así cada llamada trae pocos datos y evitamos el
+    rate limit de la API (error 429).
     """
-    url = f"{BASE_URL}/costo-marginal-online/v4/findByDate"
-    params = {"startDate": start_date, "endDate": end_date}
+    import time
 
-    records = fetch_all_pages(url, user_key, params)
-    if not records:
+    url = f"{BASE_URL}/costo-marginal-online/v4/findByDate"
+    dfs = []
+
+    for barra_transf in BARRAS.keys():
+        params = {
+            "startDate": start_date,
+            "endDate":   end_date,
+            "bar_transf": barra_transf,
+        }
+        records = fetch_all_pages(url, user_key, params)
+        if records:
+            dfs.append(pd.DataFrame(records))
+        time.sleep(0.5)  # pausa corta entre barras para no saturar la API
+
+    if not dfs:
         return pd.DataFrame()
 
-    df = pd.DataFrame(records)
+    df = pd.concat(dfs, ignore_index=True)
 
     # Construir datetime desde fecha + hra + min
     df["datetime"] = (
@@ -143,9 +164,6 @@ def fetch_cmg_online(user_key: str, start_date: str, end_date: str) -> pd.DataFr
         "cmg_usd_mwh_": "cmg_real",
         "cmg_clp_kwh_": "cmg_real_clp",
     })
-
-    # Quedarse solo con las barras del diccionario
-    df = df[df["barra_online"].isin(BARRAS.keys())].copy()
 
     cols = ["datetime", "barra_online", "nombre_barra", "cmg_real", "cmg_real_clp", "version"]
     df = df[[c for c in cols if c in df.columns]]
