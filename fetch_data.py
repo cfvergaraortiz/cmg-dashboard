@@ -196,16 +196,21 @@ def main():
     print(f"Actualizando datos: {start_str} → {end_str}")
     print(f"{'='*50}")
 
-    # CMg Online: pedimos AYER (hora UTC) para evitar el desfase con Chile.
-    # El histórico se construye acumulando cada ejecución horaria en el CSV.
+    # CMg Online: probamos hoy y ayer en UTC ya que el endpoint solo
+    # entrega datos recientes. Nos quedamos con la fecha que tenga datos.
+    hoy_str  = hoy.strftime("%Y-%m-%d")
     ayer_str = ayer.strftime("%Y-%m-%d")
-    print(f"\n📡 Descargando CMg Online ({ayer_str})...")
-    df_online = fetch_online(ayer_str, ayer_str)
-    if not df_online.empty:
-        actualizar_csv("cmg_online.csv", df_online)
+    df_online = pd.DataFrame()
+    for fecha_str in [hoy_str, ayer_str]:
+        print(f"\n📡 Descargando CMg Online ({fecha_str})...")
+        df_online = fetch_online(fecha_str, fecha_str)
+        if not df_online.empty:
+            print(f"  ✓ Datos encontrados para {fecha_str}")
+            actualizar_csv("cmg_online.csv", df_online)
+            break
+        print(f"  ✗ Sin datos para {fecha_str}, probando fecha anterior...")
     else:
-        print("  ✗ Sin datos Online")
-    print("\n📡 Descargando CMg Programado PID...")
+        print("  ✗ Sin datos Online para ninguna fecha")
     df_prog = fetch_programado(start_str, end_str)
     if not df_prog.empty:
         actualizar_csv("cmg_programado.csv", df_prog)
