@@ -196,16 +196,15 @@ def main():
     print(f"Actualizando datos: {start_str} → {end_str}")
     print(f"{'='*50}")
 
-    # CMg Online: solo pedimos HOY porque el endpoint solo entrega datos recientes.
+    # CMg Online: pedimos AYER (hora UTC) para evitar el desfase con Chile.
     # El histórico se construye acumulando cada ejecución horaria en el CSV.
-    hoy_str = hoy.strftime("%Y-%m-%d")
-    print(f"\n📡 Descargando CMg Online (solo hoy: {hoy_str})...")
-    df_online = fetch_online(hoy_str, hoy_str)
+    ayer_str = ayer.strftime("%Y-%m-%d")
+    print(f"\n📡 Descargando CMg Online ({ayer_str})...")
+    df_online = fetch_online(ayer_str, ayer_str)
     if not df_online.empty:
         actualizar_csv("cmg_online.csv", df_online)
     else:
-        print("  ✗ Sin datos Online — el endpoint no tiene datos para hoy aún")
-
+        print("  ✗ Sin datos Online")
     print("\n📡 Descargando CMg Programado PID...")
     df_prog = fetch_programado(start_str, end_str)
     if not df_prog.empty:
