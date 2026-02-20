@@ -28,15 +28,17 @@ USER_KEY = os.environ.get("CEN_TOKEN", "")
 # Cuántos días hacia atrás guardar (ajustable)
 DIAS_HISTORICO = 7
 
+# Diccionario de barras: clave = fragmento del nombre barra_info (no key sensitive)
+#                         valor = llave_cmg del programado
 BARRAS = {
-    "P.MONTT_______220": "PMontt220",
-    "A.JAHUEL______220": "AJahuel220",
-    "POLPAICO______220": "Polpaico220",
-    "P.AZUCAR______220": "PAzucar220",
-    "CARDONES______220": "Cardones220",
-    "QUILLOTA______220": "Quillota220",
-    "CRUCERO_______220": "Crucero220",
-    "CHARRUA_______220": "Charrua220",
+    "PUERTO MONTT":  "PMontt220",
+    "JAHUEL":        "AJahuel220",
+    "POLPAICO":      "Polpaico220",
+    "AZUCAR":        "PAzucar220",
+    "CARDONES":      "Cardones220",
+    "QUILLOTA":      "Quillota220",
+    "CRUCERO":       "Crucero220",
+    "CHARRUA":       "Charrua220",
 }
 
 # =============================================================================
@@ -84,25 +86,33 @@ def fetch_paginated(url: str, params: dict, page_size: int = 500) -> list:
 
 
 def fetch_online(start_date: str, end_date: str) -> pd.DataFrame:
-    """Trae CMg Online para todas las barras del diccionario."""
+    """
+    Trae CMg Online sin filtro de barra y filtra localmente por barra_info.
+    Así evitamos depender del nombre exacto (key sensitive) de barra_transf.
+    """
     url = f"{BASE_URL}/costo-marginal-online/v4/findByDate"
-    dfs = []
+    records = fetch_paginated(url, {"startDate": start_date, "endDate": end_date})
 
-    for barra_transf in BARRAS:
-        print(f"  Barra Online: {barra_transf}")
-        records = fetch_paginated(url, {
-            "startDate":  start_date,
-            "endDate":    end_date,
-            "bar_transf": barra_transf,
-        })
-        if records:
-            dfs.append(pd.DataFrame(records))
-        time.sleep(1)  # pausa entre barras
-
-    if not dfs:
+    if not records:
         return pd.DataFrame()
 
-    df = pd.concat(dfs, ignore_index=True)
+    df = pd.DataFrame(records)
+
+    # Filtrar localmente: nos quedamos con filas cuyo barra_info contenga
+    # alguno de los fragmentos del diccionario BARRAS (no key sensitive)
+    def encontrar_barra(nombre_info: str) -> str:
+        nombre_up = nombre_info.upper()
+        for fragmento in BARRAS:
+            if fragmento.upper() in nombre_up:
+                return fragmento
+        return None
+
+    df["barra_key"] = df["barra_info"].apply(encontrar_barra)
+    df = df[df["barra_key"].notna()].copy()
+
+    if df.empty:
+        return pd.DataFrame()
+
     df["datetime"] = (
         pd.to_datetime(df["fecha"])
         + pd.to_timedelta(df["hra"].astype(int), unit="h")
@@ -114,7 +124,10 @@ def fetch_online(start_date: str, end_date: str) -> pd.DataFrame:
         "cmg_usd_mwh_": "cmg_real",
         "cmg_clp_kwh_": "cmg_real_clp",
     })
-    cols = ["datetime", "barra_online", "nombre_barra", "cmg_real", "cmg_real_clp"]
+    # Agregar columna con la clave del programado para el merge posterior
+    df["barra_prog"] = df["barra_key"].map(BARRAS)
+
+    cols = ["datetime", "barra_online", "barra_prog", "nombre_barra", "cmg_real", "cmg_real_clp"]
     return df[[c for c in cols if c in df.columns]].sort_values(["barra_online", "datetime"]).reset_index(drop=True)
 
 
