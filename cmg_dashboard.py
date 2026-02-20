@@ -60,24 +60,44 @@ BARRAS_DISPLAY = {nombre_display(k): k for k in BARRAS}
 # 2. FUNCIONES API
 # =============================================================================
 
-def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 1000) -> list:
-    """Paginación automática. Auth via user_key como query param."""
+def fetch_all_pages(url: str, user_key: str, params: dict, page_size: int = 100) -> list:
+    """
+    Paginación automática. Auth via user_key como query param.
+    Usamos page_size=100 para no sobrecargar la API del CEN.
+    """
     all_records = []
     page = 1
+    MAX_RETRIES = 3
 
     while True:
         params_page = {**params, "user_key": user_key, "page": page, "limit": page_size}
+
+        # Reintentos ante errores transitorios del servidor
+        for intento in range(MAX_RETRIES):
+            try:
+                response = requests.get(
+                    url,
+                    params=params_page,
+                    headers={"accept": "application/json"},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                break  # éxito → salir del loop de reintentos
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else "?"
+                if status == 500 and intento < MAX_RETRIES - 1:
+                    import time; time.sleep(2)   # esperar antes de reintentar
+                    continue
+                st.error(f"Error {status} en la API del CEN (página {page}): {e}")
+                return all_records
+            except requests.exceptions.RequestException as e:
+                st.error(f"Error de conexión: {e}")
+                return all_records
+
         try:
-            response = requests.get(
-                url,
-                params=params_page,
-                headers={"accept": "application/json"},
-                timeout=30,
-            )
-            response.raise_for_status()
             data = response.json()
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error al conectar con la API: {e}")
+        except Exception:
+            st.error("La API devolvió una respuesta que no es JSON válido.")
             return all_records
 
         records = data.get("data", [])
