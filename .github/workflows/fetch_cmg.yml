@@ -5,6 +5,9 @@ on:
     - cron: "0 * * * *"   # cada hora en punto (UTC)
   workflow_dispatch:        # permite correrlo manualmente desde GitHub
 
+permissions:
+  contents: write           # permiso para que el bot pueda hacer push al repo
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
