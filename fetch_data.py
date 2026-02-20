@@ -186,10 +186,11 @@ def main():
 
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    hoy  = datetime.today().date()
-    hace = hoy - timedelta(days=2)   # trae los últimos 2 días en cada ejecución
+    hoy   = datetime.today().date()
+    ayer  = hoy - timedelta(days=1)  # usamos ayer como fin para evitar el
+    hace  = hoy - timedelta(days=3)  # desfase UTC vs hora Chile
     start_str = hace.strftime("%Y-%m-%d")
-    end_str   = hoy.strftime("%Y-%m-%d")
+    end_str   = ayer.strftime("%Y-%m-%d")
 
     print(f"\n{'='*50}")
     print(f"Actualizando datos: {start_str} → {end_str}")
@@ -214,6 +215,10 @@ def main():
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     print("\n✅ Actualización completada.")
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
